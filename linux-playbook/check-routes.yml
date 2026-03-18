@@ -1,0 +1,51 @@
+---
+- name: Проверка и настройка сетевых маршрутов
+  hosts: all
+  become: yes
+  
+  vars:
+    # Основной шлюз (обычно .1 или .2 в сети 10.0.2.0/24)
+    default_gateway: "10.0.2.1"
+    
+    # Наши ВМ для проверки связности
+    check_hosts:
+      - 10.0.2.4   # netbox
+      - 10.0.2.5   # zm
+      - 10.0.2.6   # bkp1
+
+  tasks:
+    - name: Собрать информацию о сети
+      command: ip route
+      register: routes
+      changed_when: false
+
+    - name: Показать текущие маршруты
+      debug:
+        var: routes.stdout_lines
+
+    - name: Проверить наличие шлюза по умолчанию
+      command: ip route show default
+      register: default_route
+      changed_when: false
+
+    - name: Добавить шлюз по умолчанию, если его нет
+      command: ip route add default via {{ default_gateway }}
+      when: default_route.stdout == ""
+      register: added_route
+
+    - name: Сообщить о добавлении шлюза
+      debug:
+        msg: "Шлюз {{ default_gateway }} добавлен на {{ inventory_hostname }}"
+      when: added_route.changed
+
+    - name: Проверить доступность других ВМ
+      command: "ping -c 2 {{ item }}"
+      loop: "{{ check_hosts | reject('equalto', ansible_default_ipv4.address) | list }}"
+      register: ping_results
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Показать результаты пингов
+      debug:
+        msg: "{{ item.item }}: {{ '✅ доступен' if item.rc == 0 else '❌ недоступен' }}"
+      loop: "{{ ping_results.results }}"

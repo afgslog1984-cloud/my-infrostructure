@@ -1,0 +1,23 @@
+---
+- name: Перезапуск сети на всех ВМ
+  hosts: all
+  become: yes
+  tasks:
+    - name: Перезапускаем networking
+      systemd:
+        name: networking
+        state: restarted
+      ignore_errors: yes
+
+    - name: Проверяем доступность
+      wait_for_connection:
+        delay: 5
+        timeout: 60
+
+    - name: Проверяем маршрут
+      command: ip route show default
+      register: route_check
+
+    - name: Показываем новый маршрут
+      debug:
+        var: route_check.stdout_lines

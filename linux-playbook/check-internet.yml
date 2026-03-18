@@ -1,0 +1,24 @@
+---
+- name: Проверка доступа в интернет
+  hosts: all
+  become: no
+  
+  tasks:
+    - name: Пинг внешнего IP
+      command: ping -c 2 8.8.8.8
+      register: ping_internet
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Проверка DNS
+      command: nslookup google.com
+      register: dns_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Результаты
+      debug:
+        msg: 
+          - "Хост: {{ inventory_hostname }} ({{ ansible_default_ipv4.address }})"
+          - "Интернет: {{ '✅' if ping_internet.rc == 0 else '❌' }}"
+          - "DNS: {{ '✅' if dns_check.rc == 0 else '❌' }}"

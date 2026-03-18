@@ -1,0 +1,134 @@
+---
+# =============================================================================
+# ПЛЕЙБУК: Настройка SSH-ключей для пользователя ansible
+# ЦЕЛЬ: Скопировать публичный ключ с управляющей ВМ на все целевые ВМ
+#        для пользователя ansible, чтобы можно было подключаться без пароля
+# =============================================================================
+
+- name: Настройка SSH-ключей для пользователя ansible
+  hosts: all                            # Применяем ко всем ВМ в инвентаре
+  become: yes                           # Выполняем с правами root
+  gather_facts: yes                      # Собираем информацию о ВМ (нужно для проверок)
+
+  # ---------------------------------------------------------------------------
+  # ПЕРЕМЕННЫЕ
+  # ---------------------------------------------------------------------------
+  vars:
+    # Имя пользователя, для которого настраиваем ключи
+    target_user: "ansible"
+    
+    # Путь к публичному ключу на управляющей ВМ (откуда будем копировать)
+    # Этот файл должен существовать на твоей управляющей машине
+    ssh_public_key_file: "/home/slavik/.ssh/ansible_key.pub"
+    
+    # Путь, куда будем сохранять ключ на целевой ВМ
+    ssh_authorized_keys_path: "/home/{{ target_user }}/.ssh/authorized_keys"
+
+  # ---------------------------------------------------------------------------
+  # ЗАДАЧИ
+  # ---------------------------------------------------------------------------
+  tasks:
+    # ----- 1. ПРОВЕРКА: существует ли пользователь ansible на целевой ВМ -----
+    - name: "ПРОВЕРКА: Убеждаемся, что пользователь {{ target_user }} существует"
+      command: "id {{ target_user }}"
+      register: user_check
+      changed_when: false                # Эта задача никогда не считается изменением
+      ignore_errors: yes                  # Не останавливаемся, если пользователя нет
+
+    - name: "ВЫВОД: Результат проверки пользователя"
+      debug:
+        msg: "Пользователь {{ target_user }} {{ '✅ существует' if user_check.rc == 0 else '❌ НЕ существует' }} на {{ inventory_hostname }}"
+
+    # ----- 2. СОЗДАНИЕ: если пользователя нет, создаем его -----
+    - name: "ДЕЙСТВИЕ: Создаем пользователя {{ target_user }} (если не существует)"
+      user:
+        name: "{{ target_user }}"
+        groups: sudo                     # Добавляем в группу sudo
+        shell: /bin/bash
+        home: "/home/{{ target_user }}"
+        create_home: yes                  # Создаем домашнюю папку
+        state: present
+      become: yes
+      when: user_check.rc != 0            # Выполняем только если пользователя нет
+
+    # ----- 3. ПРОВЕРКА: существует ли домашняя папка пользователя -----
+    - name: "ПРОВЕРКА: Существует ли домашняя папка пользователя"
+      stat:
+        path: "/home/{{ target_user }}"
+      register: home_dir_check
+
+    # ----- 4. ДЕЙСТВИЕ: создаем .ssh папку с правильными правами -----
+    - name: "ДЕЙСТВИЕ: Создаем папку .ssh в домашней директории"
+      file:
+        path: "/home/{{ target_user }}/.ssh"
+        state: directory
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: '0700'                      # Только владелец имеет права (безопасно!)
+      when: home_dir_check.stat.exists    # Выполняем только если папка существует
+
+    # ----- 5. ДЕЙСТВИЕ: читаем публичный ключ с управляющей ВМ -----
+    - name: "ДЕЙСТВИЕ: Читаем публичный ключ с управляющей машины"
+      set_fact:
+        ssh_public_key: "{{ lookup('file', ssh_public_key_file) }}"
+      delegate_to: localhost               # Выполняем на управляющей ВМ
+      run_once: yes                        # Выполняем один раз для всех хостов
+
+    # ----- 6. ДЕЙСТВИЕ: копируем ключ на целевую ВМ -----
+    - name: "ДЕЙСТВИЕ: Добавляем публичный ключ в authorized_keys"
+      authorized_key:
+        user: "{{ target_user }}"
+        key: "{{ ssh_public_key }}"
+        state: present
+        exclusive: no                      # Не удалять другие ключи (если есть)
+      become: yes
+
+    # ----- 7. ПРОВЕРКА: убеждаемся, что ключ добавился -----
+    - name: "ПРОВЕРКА: Проверяем содержимое authorized_keys"
+      command: "cat {{ ssh_authorized_keys_path }}"
+      register: authorized_keys_content
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "ВЫВОД: Содержимое authorized_keys"
+      debug:
+        msg: "{{ authorized_keys_content.stdout_lines | default('❌ Файл не найден') }}"
+
+    # ----- 8. ПРОВЕРКА: правильные ли права на .ssh папку -----
+    - name: "ПРОВЕРКА: Права на .ssh папку"
+      stat:
+        path: "/home/{{ target_user }}/.ssh"
+      register: ssh_dir_perms
+
+    - name: "ВЫВОД: Права на .ssh папку"
+      debug:
+        msg: 
+          - "Владелец: {{ ssh_dir_perms.stat.pw_name }}"
+          - "Права: {{ ssh_dir_perms.stat.mode }}"
+          - "{% if ssh_dir_perms.stat.mode == '0700' %}✅ Права корректны (0700){% else %}❌ ОШИБКА: должно быть 0700, а сейчас {{ ssh_dir_perms.stat.mode }}{% endif %}"
+
+    # ----- 9. ПРОВЕРКА: можем ли мы подключиться по SSH под новым пользователем -----
+    - name: "ПРОВЕРКА: Тестируем подключение по SSH под пользователем {{ target_user }}"
+      command: "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {{ target_user }}@{{ ansible_host }} 'whoami'"
+      delegate_to: localhost
+      register: ssh_test
+      ignore_errors: yes
+      changed_when: false
+
+    - name: "ВЫВОД: Результат теста SSH"
+      debug:
+        msg: "Подключение по SSH {{ '✅ успешно' if ssh_test.rc == 0 else '❌ не удалось' }} для пользователя {{ target_user }} на {{ inventory_hostname }}"
+
+  # ---------------------------------------------------------------------------
+  # ИТОГОВЫЙ ОТЧЕТ
+  # ---------------------------------------------------------------------------
+  post_tasks:
+    - name: "📊 ИТОГОВЫЙ ОТЧЕТ: Статус настройки SSH-ключей"
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Хост: {{ inventory_hostname }} ({{ ansible_default_ipv4.address }})"
+          - "Пользователь: {{ target_user }}"
+          - "SSH ключ: {{ '✅ установлен' if authorized_keys_content.rc == 0 else '❌ НЕ установлен' }}"
+          - "Подключение по SSH: {{ '✅ работает' if ssh_test.rc == 0 else '❌ не работает' }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

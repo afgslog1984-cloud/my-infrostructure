@@ -1,0 +1,18 @@
+---
+- name: Установка программ через Chocolatey
+  hosts: windows
+  tasks:
+    - name: Установить 7-Zip
+      win_chocolatey:
+        name: 7zip
+        state: present
+        
+    - name: Установить Notepad++
+      win_chocolatey:
+        name: notepadplusplus
+        state: present
+        
+    - name: Установить VLC
+      win_chocolatey:
+        name: vlc
+        state: present

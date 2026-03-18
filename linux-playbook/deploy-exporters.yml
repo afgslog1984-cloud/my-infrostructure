@@ -1,0 +1,51 @@
+---
+- name: Установка Node Exporter и cAdvisor на целевые ВМ
+  hosts: all  # применяется ко всем группам
+  become: yes
+
+  tasks:
+    - name: Убедиться, что Docker установлен
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Запустить Node Exporter
+      docker_container:
+        name: node-exporter
+        image: prom/node-exporter:latest
+        restart_policy: unless-stopped
+        ports:
+          - "9100:9100"
+        volumes:
+          - "/:/host:ro"
+        command:
+          - '--path.rootfs=/host'
+        state: started
+
+    - name: Запустить cAdvisor
+      docker_container:
+        name: cadvisor
+        image: gcr.io/cadvisor/cadvisor:latest
+        restart_policy: unless-stopped
+        ports:
+          - "8080:8080"
+        volumes:
+          - "/:/rootfs:ro"
+          - "/var/run:/var/run:ro"
+          - "/sys:/sys:ro"
+          - "/var/lib/docker/:/var/lib/docker:ro"
+        state: started
+
+    - name: Убедиться, что контейнеры запущены
+      docker_container_info:
+        name: "{{ item }}"
+      loop:
+        - node-exporter
+        - cadvisor
+      register: container_status
+
+    - name: Вывести статус
+      debug:
+        msg: "{{ item.item }} статус: {{ '✅ работает' if item.exists else '❌ не найден' }}"
+      loop: "{{ container_status.results }}"

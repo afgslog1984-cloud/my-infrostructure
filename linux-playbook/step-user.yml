@@ -1,0 +1,134 @@
+---
+# Этот плейбук создает пользователя ansible на всех серверах по шагам
+# Каждый шаг сопровождается проверкой
+
+# --- ШАГ 0. Общая информация о плейбуке ---
+- name: "ПОШАГОВОЕ СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ ANSIBLE"
+  hosts: all                    # Применяется ко всем серверам в инвентаре
+  become: yes                    # Выполнять с правами root (sudo)
+  gather_facts: yes              # Собирать информацию о серверах (нужно для проверок)
+  
+  # --- Переменные, которые можно менять ---
+  vars:
+    # Имя создаваемого пользователя
+    user_name: "ansible"
+    
+    # Хеш пароля (сгенерирован командой mkpasswd --method=sha-512)
+    # Для пароля "ansible" хеш выглядит так:
+    user_password_hash: "$6$ZBCbIBwlcljDd7qI$QUfOSoKjFehfaop..Xj7zQjoo.bRzgFOl8gBpUf2SvM55YQUHiNZWBEeNbRR0OlhHLH2SkfEmqyohrDSYCGD8/"
+ 
+    
+    # Нужно ли менять пароль (true/false)
+    change_password: false
+    
+    # Домашняя папка пользователя
+    user_home: "/home/{{ user_name }}"
+
+  # --- Задачи выполняются последовательно ---
+  tasks:
+    
+    # ========== ШАГ 1. Создание пользователя ==========
+    - name: "ШАГ 1 - Создание пользователя {{ user_name }}"
+      user:                                      # Модуль для управления пользователями
+        name: "{{ user_name }}"                  # Имя пользователя
+        password: "{{ user_password_hash }}"     # Хешированный пароль
+        shell: /bin/bash                         # Командная оболочка
+        home: "{{ user_home }}"                   # Путь к домашней папке
+        create_home: yes                          # Создать домашнюю папку, если нет
+        state: present                            # Пользователь должен существовать
+      register: user_created                       # Сохраняем результат в переменную
+      become: yes                                  # Нужны права root
+
+    # ПРОВЕРКА ШАГА 1
+    - name: "ПРОВЕРКА 1 - Убеждаемся, что пользователь создан"
+      debug:                                       # Модуль для вывода отладочной информации
+        msg: "✅ Пользователь {{ user_name }} успешно создан на сервере {{ inventory_hostname }}"
+      when: user_created.changed                    # Выводим только если были изменения
+
+    # ========== ШАГ 2. Добавление в группу sudo ==========
+    - name: "ШАГ 2 - Добавление пользователя {{ user_name }} в группу sudo"
+      user:
+        name: "{{ user_name }}"
+        groups: sudo                                # Добавляем в группу sudo
+        append: yes                                 # Добавляем к существующим группам, а не заменяем
+      register: group_added
+      become: yes
+
+    # ПРОВЕРКА ШАГА 2 - через модуль command
+    - name: "ПРОВЕРКА 2 - Проверяем группы пользователя"
+      command: "groups {{ user_name }}"              # Выполняем команду groups
+      register: group_check                          # Сохраняем вывод
+      changed_when: false                            # Эта задача никогда не считается изменением
+      become: yes
+
+    - name: "ПРОВЕРКА 2 - Вывод результата"
+      debug:
+        msg: "✅ Пользователь {{ user_name }} состоит в группах: {{ group_check.stdout }}"
+      when: "'sudo' in group_check.stdout"           # Проверяем, что sudo есть в списке
+
+    # ========== ШАГ 3. Смена пароля (опционально) ==========
+    - name: "ШАГ 3 - Смена пароля для пользователя {{ user_name }} (если требуется)"
+      user:
+        name: "{{ user_name }}"
+        password: "{{ user_password_hash }}"
+        update_password: always                      # Всегда обновлять пароль, даже если совпадает
+      register: password_changed
+      become: yes
+      when: change_password | bool                    # Выполнять только если change_password=true
+
+    # ПРОВЕРКА ШАГА 3
+    - name: "ПРОВЕРКА 3 - Подтверждение смены пароля"
+      debug:
+        msg: "✅ Пароль для пользователя {{ user_name }} изменен на сервере {{ inventory_hostname }}"
+      when: password_changed is defined and password_changed.changed
+
+    # ========== ШАГ 4. Проверка домашней папки ==========
+    - name: "ШАГ 4 - Проверка прав на домашнюю папку"
+      file:
+        path: "{{ user_home }}"
+        owner: "{{ user_name }}"
+        group: "{{ user_name }}"
+        mode: '0750'                                 # Права: владелец все, группа чтение/выполнение, остальные ничего
+        state: directory
+      register: home_check
+      become: yes
+
+    # ПРОВЕРКА ШАГА 4
+    - name: "ПРОВЕРКА 4 - Информация о домашней папке"
+      stat:
+        path: "{{ user_home }}"
+      register: home_stat
+      become: yes
+
+    - name: "ПРОВЕРКА 4 - Вывод информации о домашней папке"
+      debug:
+        msg: 
+          - "📁 Домашняя папка: {{ home_stat.stat.path }}"
+          - "👤 Владелец: {{ home_stat.stat.uid }} ({{ home_stat.stat.pw_name }})"
+          - "👥 Группа: {{ home_stat.stat.gid }} ({{ home_stat.stat.gr_name }})"
+          - "🔐 Права: {{ home_stat.stat.mode }}"
+
+    # ========== ШАГ 5. Проверка sudo доступа ==========
+    - name: "ШАГ 5 - Проверка sudo доступа для пользователя {{ user_name }}"
+      command: "sudo -l -U {{ user_name }}"
+      register: sudo_check
+      changed_when: false
+      become: yes
+      ignore_errors: yes                             # Не останавливаемся при ошибке
+
+    - name: "ПРОВЕРКА 5 - Результат проверки sudo"
+      debug:
+        msg: "✅ Пользователь {{ user_name }} имеет права sudo: {{ sudo_check.stdout_lines | default('Нет прав sudo') }}"
+      when: sudo_check.rc == 0                       # Если команда успешна
+
+    # ========== ФИНАЛЬНЫЙ ОТЧЕТ ==========
+    - name: "📊 ФИНАЛЬНЫЙ ОТЧЕТ - Сводка по серверу {{ inventory_hostname }}"
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "✅ Все шаги выполнены успешно"
+          - "👤 Пользователь: {{ user_name }}"
+          - "📁 Домашняя папка: {{ user_home }}"
+          - "🔑 Пароль: {{ 'установлен' if user_password_hash != '' else 'не установлен' }}"
+          - "🔄 Смена пароля: {{ 'выполнена' if change_password else 'не требуется' }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

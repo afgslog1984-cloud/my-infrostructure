@@ -1,0 +1,15 @@
+---
+- name: Проверка Windows 7
+  hosts: windows
+  gather_facts: yes
+  
+  tasks:
+    - name: Проверить доступность
+      win_ping:
+      
+    - name: Показать информацию о системе
+      debug:
+        msg: 
+          - "Имя компьютера: {{ ansible_hostname }}"
+          - "Версия Windows: {{ ansible_os_name }}"
+          - "Версия PowerShell: {{ ansible_powershell_version }}"

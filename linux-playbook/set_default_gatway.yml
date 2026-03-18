@@ -1,0 +1,100 @@
+---
+- name: Настройка правильного шлюза по умолчанию на всех ВМ
+  hosts: all
+  become: yes
+  vars:
+    correct_gateway: "10.0.2.100"
+    network_interface: "enp0s3"  # может быть eth0 или другое, подстрой под свои ВМ
+
+  tasks:
+    - name: Получить текущий шлюз по умолчанию
+      command: ip route show default
+      register: current_default_route
+      changed_when: false
+
+    - name: Показать текущий шлюз
+      debug:
+        msg: "Текущий шлюз на {{ inventory_hostname }}: {{ current_default_route.stdout | default('Нет шлюза') }}"
+
+    - name: Проверить, правильный ли сейчас шлюз
+      set_fact:
+        is_correct_gateway: "{{ correct_gateway in current_default_route.stdout }}"
+
+    - name: Удалить старый неправильный шлюз
+      command: ip route del default
+      when: not is_correct_gateway
+      ignore_errors: yes
+
+    - name: Добавить правильный шлюз
+      command: ip route add default via {{ correct_gateway }} dev {{ network_interface }}
+      when: not is_correct_gateway
+      register: new_route_added
+
+    - name: Проверить, что новый шлюз работает
+      command: ip route show default
+      register: new_default_route
+      changed_when: false
+
+    - name: Показать новый шлюз
+      debug:
+        msg: "Новый шлюз на {{ inventory_hostname }}: {{ new_default_route.stdout }}"
+
+    - name: Проверить доступ до шлюза
+      command: ping -c 2 {{ correct_gateway }}
+      register: ping_gateway
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Результат проверки шлюза
+      debug:
+        msg: "Шлюз {{ correct_gateway }} {{ '✅ доступен' if ping_gateway.rc == 0 else '❌ недоступен' }} на {{ inventory_hostname }}"
+
+    - name: Проверить доступ в интернет (8.8.8.8)
+      command: ping -c 2 8.8.8.8
+      register: ping_internet
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Результат проверки интернета
+      debug:
+        msg: "Интернет {{ '✅ доступен' if ping_internet.rc == 0 else '❌ недоступен' }} на {{ inventory_hostname }}"
+
+    - name: Сделать шлюз постоянным (для Debian/Ubuntu with netplan)
+      block:
+        - name: Определить, используется ли netplan
+          stat:
+            path: /etc/netplan
+          register: netplan_dir
+
+        - name: Создать или обновить netplan конфиг
+          template:
+            src: netplan-gateway.j2
+            dest: /etc/netplan/01-netcfg.yaml
+            mode: '0644'
+          when: netplan_dir.stat.exists
+          notify: apply netplan
+
+        - name: Определить, используется ли ifupdown
+          stat:
+            path: /etc/network/interfaces
+          register: interfaces_file
+
+        - name: Обновить /etc/network/interfaces для ifupdown
+          lineinfile:
+            path: /etc/network/interfaces
+            regexp: '^gateway'
+            line: "gateway {{ correct_gateway }}"
+            insertafter: "iface {{ network_interface }} inet static"
+          when: interfaces_file.stat.exists and not netplan_dir.stat.exists
+          notify: restart networking
+
+      when: new_route_added.changed
+
+  handlers:
+    - name: apply netplan
+      command: netplan apply
+
+    - name: restart networking
+      systemd:
+        name: networking
+        state: restarted

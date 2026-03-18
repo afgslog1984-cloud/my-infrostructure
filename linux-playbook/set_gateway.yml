@@ -1,0 +1,28 @@
+---
+- name: Перенастроить шлюз на целевых ВМ
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Удалить старый дефолтный шлюз (если есть)
+      command: ip route del default
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Добавить новый шлюз (управляющая ВМ 10.0.2.100)
+      command: ip route add default via 10.0.2.100
+
+    - name: Сделать шлюз постоянным (для Debian/Ubuntu)
+      lineinfile:
+        path: /etc/network/interfaces
+        regexp: '^iface eth0 inet static'
+        insertafter: '^auto eth0'
+        line: "    gateway 10.0.2.100"
+      when: ansible_os_family == "Debian"
+      notify: restart networking
+
+  handlers:
+    - name: restart networking
+      service:
+        name: networking
+        state: restarted

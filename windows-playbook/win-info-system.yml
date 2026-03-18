@@ -1,0 +1,21 @@
+---
+- name: Полная диагностика Windows
+  hosts: windows
+  gather_facts: yes
+  
+  tasks:
+    - name: Сохранить информацию о дисках
+      win_command: wmic logicaldisk get deviceid, volumename, size, freespace
+      register: disks
+      
+    - name: Сохранить информацию о сети
+      win_command: ipconfig /all
+      register: network
+      
+    - name: Вывести результаты
+      debug:
+        msg:
+          - "=== ДИСКИ ==="
+          - "{{ disks.stdout_lines }}"
+          - "=== СЕТЬ ==="
+          - "{{ network.stdout_lines }}"

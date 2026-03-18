@@ -1,0 +1,131 @@
+---
+# =============================================================================
+# ПЛЕЙБУК: Запрет входа root по SSH
+# ЦЕЛЬ: Отключить возможность входа под пользователем root через SSH
+#       (оставляем только вход по ключам для пользователя ansible)
+# =============================================================================
+
+- name: Запрет входа root по SSH
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # Путь к конфигурационному файлу SSH
+    sshd_config_path: "/etc/ssh/sshd_config"
+    
+    # Параметры, которые будем менять
+    sshd_settings:
+      - param: "PermitRootLogin"
+        value: "no"                      # Запрещаем root
+      - param: "PasswordAuthentication"
+        value: "no"                      # Запрещаем вход по паролю (только ключи)
+      - param: "PubkeyAuthentication"
+        value: "yes"                      # Разрешаем вход по ключам
+      - param: "ChallengeResponseAuthentication"
+        value: "no"                       # Отключаем дополнительные методы
+
+  tasks:
+    # ----- 1. ПРОВЕРКА: текущие настройки SSH -----
+    - name: "ПРОВЕРКА: Читаем текущий конфиг SSH"
+      command: "cat {{ sshd_config_path }}"
+      register: current_config
+      changed_when: false
+
+    - name: "ВЫВОД: Текущие настройки SSH (первые 20 строк)"
+      debug:
+        msg: "{{ current_config.stdout_lines[:20] }}"
+
+    # ----- 2. ДЕЙСТВИЕ: создаем резервную копию -----
+    - name: "ДЕЙСТВИЕ: Создаем резервную копию конфига SSH"
+      copy:
+        src: "{{ sshd_config_path }}"
+        dest: "{{ sshd_config_path }}.backup-{{ ansible_date_time.date }}"
+        remote_src: yes
+        mode: '0644'
+
+    # ----- 3. ДЕЙСТВИЕ: отключаем вход для root -----
+    - name: "ДЕЙСТВИЕ: Запрещаем вход root"
+      lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin no"
+        backup: yes
+      register: root_login_changed
+
+    # ----- 4. ДЕЙСТВИЕ: отключаем вход по паролю -----
+    - name: "ДЕЙСТВИЕ: Отключаем аутентификацию по паролю"
+      lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+      register: password_auth_changed
+
+    # ----- 5. ДЕЙСТВИЕ: убеждаемся, что вход по ключам включен -----
+    - name: "ДЕЙСТВИЕ: Включаем аутентификацию по ключам"
+      lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: "^#?PubkeyAuthentication"
+        line: "PubkeyAuthentication yes"
+      register: pubkey_auth_changed
+
+    # ----- 6. ПРОВЕРКА: синтаксис конфига после изменений -----
+    - name: "ПРОВЕРКА: Проверяем синтаксис SSH конфига"
+      command: "sshd -t"
+      register: syntax_check
+      changed_when: false
+
+    - name: "ВЫВОД: Результат проверки синтаксиса"
+      debug:
+        msg: "Синтаксис конфига {{ '✅ корректен' if syntax_check.rc == 0 else '❌ содержит ошибки' }}"
+
+    # ----- 7. ДЕЙСТВИЕ: перезапускаем SSH только если синтаксис правильный -----
+    - name: "ДЕЙСТВИЕ: Перезапускаем SSH сервис"
+      systemd:
+        name: sshd
+        state: restarted
+      when: syntax_check.rc == 0
+      register: ssh_restarted
+
+    # ----- 8. ПРОВЕРКА: убеждаемся, что SSH работает после перезапуска -----
+    - name: "ПРОВЕРКА: Ждем, пока SSH поднимется"
+      wait_for:
+        port: 22
+        host: "{{ ansible_host }}"
+        delay: 5
+        timeout: 30
+      delegate_to: localhost
+      when: ssh_restarted is defined
+
+    # ----- 9. ПРОВЕРКА: пробуем подключиться под пользователем ansible -----
+    - name: "ПРОВЕРКА: Тестируем подключение под пользователем ansible"
+      command: "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ansible@{{ ansible_host }} 'whoami'"
+      delegate_to: localhost
+      register: ansible_ssh_test
+      ignore_errors: yes
+      changed_when: false
+
+    # ----- 10. ПРОВЕРКА: пробуем подключиться под root -----
+    - name: "ПРОВЕРКА: Пытаемся подключиться под root (должно отказать)"
+      command: "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no root@{{ ansible_host }} 'whoami'"
+      delegate_to: localhost
+      register: root_ssh_test
+      ignore_errors: yes
+      changed_when: false
+
+  # ---------------------------------------------------------------------------
+  # ИТОГОВЫЙ ОТЧЕТ
+  # ---------------------------------------------------------------------------
+  post_tasks:
+    - name: "📊 ИТОГОВЫЙ ОТЧЕТ: Результаты настройки SSH"
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Хост: {{ inventory_hostname }} ({{ ansible_default_ipv4.address }})"
+          - "PermitRootLogin: now"
+          - "PasswordAuthentication: no"
+          - "PubkeyAuthentication: yes"
+          - ""
+          - "Подключение под ansible: {{ '✅ работает' if ansible_ssh_test.rc == 0 else '❌ не работает' }}"
+          - "Подключение под root: {{ '✅ заблокировано (правильно)' if root_ssh_test.rc != 0 else '❌ root ДОСТУПЕН (ошибка безопасности!)' }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

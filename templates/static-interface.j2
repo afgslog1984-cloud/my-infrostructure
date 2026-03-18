@@ -1,0 +1,14 @@
+# This file is managed by Ansible
+# Статическая настройка сети
+
+# The loopback network interface
+auto lo
+iface lo inet loopback
+
+# The primary network interface
+auto {{ network_interface }}
+iface {{ network_interface }} inet static
+    address {{ static_ip }}
+    netmask 255.255.255.0
+    gateway {{ correct_gateway }}
+    dns-nameservers {{ dns_servers | join(' ') }}

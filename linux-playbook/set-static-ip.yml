@@ -1,0 +1,42 @@
+---
+- name: Настройка статических IP на всех ВМ
+  hosts: all
+  become: yes
+  vars:
+    correct_gateway: "10.0.2.100"
+    dns_servers:
+      - "8.8.8.8"
+      - "1.1.1.1"
+    network_interface: "enp0s3"
+    static_ip: "{{ ansible_default_ipv4.address }}"  # сохраняем текущий IP
+
+  tasks:
+    - name: Показать текущий IP
+      debug:
+        msg: "Текущий IP {{ inventory_hostname }}: {{ static_ip }}"
+
+    - name: Создаем резервную копию текущего конфига
+      copy:
+        src: /etc/network/interfaces
+        dest: /etc/network/interfaces.bak
+        remote_src: yes
+        backup: yes
+
+    - name: Полностью перезаписываем /etc/network/interfaces для статики
+      template:
+        src: static-interface.j2
+        dest: /etc/network/interfaces
+        mode: '0644'
+
+    - name: Проверяем, что конфиг корректен
+      command: ifdown {{ network_interface }} && ifup {{ network_interface }} --no-act
+      register: config_check
+      ignore_errors: yes
+
+    - name: Сообщаем о необходимости перезагрузки
+      debug:
+        msg: |
+          Конфигурация обновлена. Для применения выполните одно из:
+          1. sudo systemctl restart networking
+          2. sudo reboot
+      when: config_check.rc == 0
